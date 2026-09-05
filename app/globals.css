@@ -1,0 +1,65 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@theme {
+  --font-sans: var(--font-urbanist), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-handwriting: var(--font-caveat), "Caveat", cursive, sans-serif;
+  --color-alice-blue: #D8DFE9;
+  --color-honeydew: #CFDECA;
+  --color-vanilla: #EFF0A3;
+  --color-eerie-black: #212121;
+  --color-ghost-white: #F6F5FA;
+}
+
+:root {
+  --background: #F6F5FA;
+  --foreground: #212121;
+}
+
+/* High GSM Cotton Rag Paper Texture (Journal Page) */
+.high-gsm-paper {
+  background-color: #FBFBFA;
+  background-image: url('/textures/high-gsm-paper.jpg');
+  background-repeat: no-repeat;
+  background-size: cover;
+  background-position: center top;
+  border: 1px solid rgba(210, 205, 195, 0.8);
+  box-shadow: 
+    0 2px 5px rgba(0, 0, 0, 0.03),
+    0 12px 36px -4px rgba(45, 35, 20, 0.08),
+    0 28px 72px -12px rgba(45, 35, 20, 0.12);
+}
+
+/* Authentic Royal Blue Fountain Pen Ink */
+.blue-ink-text {
+  color: #1a4eb8;
+  text-shadow: 0 0 0.4px rgba(26, 78, 184, 0.35);
+}
+
+.blue-ink-placeholder::placeholder {
+  color: rgba(26, 78, 184, 0.82);
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-urbanist), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom minimal scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(33, 33, 33, 0.12);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(33, 33, 33, 0.25);
+}
