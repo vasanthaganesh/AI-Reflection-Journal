@@ -1,0 +1,12 @@
+Dockerfile
+.dockerignore
+node_modules
+npm-debug.log
+.next
+.git
+.agents
+.env*
+!.env.example
+tests
+*.tsbuildinfo
+Audit_Report.md
