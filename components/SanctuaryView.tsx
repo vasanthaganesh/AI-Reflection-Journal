@@ -101,24 +101,7 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
     }
   }, [messages, isHistoryDrawerOpen]);
 
-  // Handle persona change
-  const handleSelectPersona = (id: CompanionPersonaId) => {
-    setActivePersonaId(id);
-    const newPersona = COMPANION_PERSONAS[id];
-    setCurrentSubtitle(newPersona.greeting);
-    setCurrentEmotion('warm');
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: 'switch-' + Date.now(),
-        role: 'assistant',
-        content: newPersona.greeting,
-        emotion: 'warm',
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      },
-    ]);
-    speakText(newPersona.greeting, id);
-  };
+  const activeAudioRef = useRef<HTMLAudioElement | null>(null);
 
   // Web Speech Synthesis (Text-to-Speech)
   const speakText = useCallback((text: string, personaId: CompanionPersonaId) => {
@@ -182,8 +165,6 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
     }
   }, [isVoiceMuted]);
 
-  const activeAudioRef = useRef<HTMLAudioElement | null>(null);
-
   const playGeminiAudio = useCallback((audioDataUrl: string, fallbackText: string) => {
     if (isVoiceMuted) {
       setCompanionState('idle');
@@ -199,22 +180,36 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
       const audio = new Audio(audioDataUrl);
       activeAudioRef.current = audio;
 
+      let pulseInterval: any = null;
+
       audio.onplay = () => {
         setCompanionState('speaking');
-        setAudioLevel(0.55);
+        setAudioLevel(0.65);
+        pulseInterval = setInterval(() => {
+          setAudioLevel(0.4 + Math.random() * 0.45);
+        }, 120);
       };
 
-      audio.onended = () => {
+      const cleanup = () => {
+        if (pulseInterval) {
+          clearInterval(pulseInterval);
+          pulseInterval = null;
+        }
         setCompanionState('idle');
         setAudioLevel(0.0);
       };
 
+      audio.onended = cleanup;
+      audio.onpause = cleanup;
+
       audio.onerror = (e) => {
+        cleanup();
         console.warn('Gemini audio playback error event, using speech synthesis fallback:', e);
         speakText(fallbackText, activePersonaId);
       };
 
       audio.play().catch((e) => {
+        cleanup();
         console.warn('Gemini audio play failed, falling back to speech synthesis:', e);
         speakText(fallbackText, activePersonaId);
       });
@@ -223,6 +218,52 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
       speakText(fallbackText, activePersonaId);
     }
   }, [isVoiceMuted, activePersonaId, speakText]);
+
+  // Handle persona change
+  const handleSelectPersona = async (id: CompanionPersonaId) => {
+    setActivePersonaId(id);
+    const newPersona = COMPANION_PERSONAS[id];
+    setCurrentSubtitle(newPersona.greeting);
+    setCurrentEmotion('warm');
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: 'switch-' + Date.now(),
+        role: 'assistant',
+        content: newPersona.greeting,
+        emotion: 'warm',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      },
+    ]);
+
+    if (isVoiceMuted) return;
+
+    // Synthesize greeting with natural Gemini Voice
+    try {
+      const res = await fetch('/api/companion', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${userToken}`,
+        },
+        body: JSON.stringify({
+          prompt: newPersona.greeting,
+          personaId: id,
+          ttsOnly: true,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.audio) {
+          playGeminiAudio(data.audio, newPersona.greeting);
+          return;
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to synthesize persona greeting voice:', e);
+    }
+    speakText(newPersona.greeting, id);
+  };
 
   // Send turn to backend
   const handleSendMessage = async (rawInput?: string) => {

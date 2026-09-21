@@ -5,14 +5,15 @@ import { checkRateLimit, getClientIp } from '@/lib/rate-limit';
 import { getPersonaPrompt, COMPANION_PERSONAS } from '@/lib/personas';
 import { CompanionPersonaId } from '@/lib/types';
 
-const AUDIO_MODELS = [
-  'gemini-2.5-flash-native-audio-preview-12-2025',
-  'gemini-2.5-flash',
-  'gemini-2.0-flash',
+// Fast dialogue model for prompt response
+const DIALOGUE_MODELS = [
   'gemini-3.1-flash-lite',
   'gemini-3.6-flash',
   'gemini-flash-latest',
 ];
+
+// High-fidelity speech synthesis model for natural Gemini voice output
+const TTS_MODEL = 'gemini-3.1-flash-tts-preview';
 
 function pcmToWavDataUrl(pcmBase64: string, sampleRate = 24000): string {
   const pcmBuffer = Buffer.from(pcmBase64, 'base64');
@@ -27,8 +28,8 @@ function pcmToWavDataUrl(pcmBase64: string, sampleRate = 24000): string {
   header.writeUInt16LE(1, 20); // PCM format
   header.writeUInt16LE(1, 22); // mono
   header.writeUInt32LE(sampleRate, 24);
-  header.writeUInt32LE(sampleRate * 2, 28); // ByteRate
-  header.writeUInt16LE(2, 32);  // BlockAlign
+  header.writeUInt32LE(sampleRate * 2, 28); // ByteRate (sampleRate * numChannels * bitsPerSample/8)
+  header.writeUInt16LE(2, 32);  // BlockAlign (numChannels * bitsPerSample/8)
   header.writeUInt16LE(16, 34); // BitsPerSample
   header.write('data', 36);
   header.writeUInt32LE(dataLength, 40);
@@ -59,50 +60,54 @@ function parseEmotion(text: string): { emotion: string; text: string } {
   };
 }
 
-async function generateContentWithFallback(ai: GoogleGenAI, contents: any, systemInstruction: string, voiceName = 'Aoede') {
+async function generateDialogueWithFallback(ai: GoogleGenAI, contents: any, systemInstruction: string) {
   let lastError: any;
-  
-  // First attempt: Request Audio + Text with prebuilt Gemini voice
-  for (const model of AUDIO_MODELS) {
-    try {
-      const response = await ai.models.generateContent({
-        model,
-        contents,
-        config: {
-          systemInstruction,
-          responseModalities: ['AUDIO', 'TEXT'],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: {
-                voiceName,
-              },
-            },
-          },
-        },
-      });
-      return { response, hasAudio: true };
-    } catch (error: any) {
-      console.warn(`[Companion API] Audio model ${model} failed, trying fallback:`, error.message);
-      lastError = error;
-    }
-  }
-
-  // Fallback attempt: Request Text-only if Audio modality is unavailable
-  for (const model of AUDIO_MODELS) {
+  for (const model of DIALOGUE_MODELS) {
     try {
       const response = await ai.models.generateContent({
         model,
         contents,
         config: { systemInstruction },
       });
-      return { response, hasAudio: false };
-    } catch (error: any) {
-      console.warn(`[Companion API] Fallback text model ${model} failed:`, error.message);
-      lastError = error;
+      if (response && response.text) {
+        return response.text;
+      }
+    } catch (err: any) {
+      console.warn(`[Companion Dialogue] Model ${model} failed, trying next fallback:`, err.message);
+      lastError = err;
     }
   }
+  throw lastError || new Error('Failed to generate companion dialogue.');
+}
 
-  throw lastError;
+async function synthesizeGeminiVoice(ai: GoogleGenAI, text: string, voiceName: string): Promise<string | null> {
+  try {
+    const ttsResponse = await ai.models.generateContent({
+      model: TTS_MODEL,
+      contents: text,
+      config: {
+        responseModalities: ['AUDIO'],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: {
+              voiceName: voiceName || 'Aoede',
+            },
+          },
+        },
+      },
+    });
+
+    if (ttsResponse.candidates?.[0]?.content?.parts) {
+      for (const part of ttsResponse.candidates[0].content.parts) {
+        if (part.inlineData && part.inlineData.data) {
+          return pcmToWavDataUrl(part.inlineData.data, 24000);
+        }
+      }
+    }
+  } catch (err: any) {
+    console.warn(`[Companion TTS] Synthesis with ${TTS_MODEL} (${voiceName}) failed:`, err.message);
+  }
+  return null;
 }
 
 export async function POST(req: NextRequest) {
@@ -157,13 +162,11 @@ export async function POST(req: NextRequest) {
 
     // Body parsing
     const body = (await req.json().catch(() => null)) || {};
-    const { history, prompt, personaId = 'samantha', journalContext } = body;
-
-    if (!prompt) {
-      return NextResponse.json({ error: 'Prompt is required' }, { status: 400 });
-    }
+    const { history, prompt, personaId = 'samantha', journalContext, ttsOnly = false } = body;
 
     const validPersonaId = (COMPANION_PERSONAS[personaId as CompanionPersonaId] ? personaId : 'samantha') as CompanionPersonaId;
+    const persona = COMPANION_PERSONAS[validPersonaId];
+    const voiceName = persona.voiceName || 'Aoede';
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
@@ -173,6 +176,22 @@ export async function POST(req: NextRequest) {
     }
 
     const ai = new GoogleGenAI({ apiKey });
+
+    // Handle quick greeting/tts-only requests
+    if (ttsOnly && prompt) {
+      const cleanPrompt = cleanSpeechText(prompt);
+      const audioDataUrl = await synthesizeGeminiVoice(ai, cleanPrompt, voiceName);
+      return NextResponse.json({
+        text: cleanPrompt,
+        audio: audioDataUrl,
+        emotion: 'warm',
+        personaId: validPersonaId,
+      });
+    }
+
+    if (!prompt) {
+      return NextResponse.json({ error: 'Prompt is required' }, { status: 400 });
+    }
 
     // Build system instruction including persona guidelines & journal memories
     let systemInstruction = getPersonaPrompt(validPersonaId);
@@ -188,32 +207,15 @@ export async function POST(req: NextRequest) {
       ? [...history, { role: 'user', parts: [{ text: sandboxedUserPrompt }] }]
       : [{ role: 'user', parts: [{ text: sandboxedUserPrompt }] }];
 
-    const persona = COMPANION_PERSONAS[validPersonaId];
-    const voiceName = persona.voiceName || 'Aoede';
+    // 1. Generate text dialogue with fast conversational LLM
+    const rawText = await generateDialogueWithFallback(ai, contents, systemInstruction);
 
-    const { response, hasAudio } = await generateContentWithFallback(ai, contents, systemInstruction, voiceName);
-    
-    let rawText = response.text || '';
-    let audioDataUrl: string | null = null;
-
-    if (response.candidates?.[0]?.content?.parts) {
-      for (const part of response.candidates[0].content.parts) {
-        if (part.inlineData && part.inlineData.data) {
-          try {
-            audioDataUrl = pcmToWavDataUrl(part.inlineData.data, 24000);
-          } catch (e) {
-            console.warn('[Companion Audio Conversion Error]:', e);
-          }
-        }
-        if (part.text && !rawText) {
-          rawText = part.text;
-        }
-      }
-    }
-
-    // Extract emotion bracket tag and clean speech text
+    // 2. Extract emotion bracket tag and clean speech text
     const { emotion, text: textAfterEmotion } = parseEmotion(rawText);
     const spokenText = cleanSpeechText(textAfterEmotion);
+
+    // 3. Synthesize natural human-like Gemini voice audio using gemini-3.1-flash-tts-preview
+    const audioDataUrl = await synthesizeGeminiVoice(ai, spokenText, voiceName);
 
     return NextResponse.json({
       text: spokenText,
