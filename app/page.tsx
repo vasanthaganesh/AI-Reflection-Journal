@@ -139,22 +139,59 @@ export default function App() {
   const [loadingAuth, setLoadingAuth] = useState(true);
 
   useEffect(() => {
+    let isSubscribed = true;
     const savedGuest = getSavedGuestUser();
     if (savedGuest) {
       setUser(savedGuest);
       setLoadingAuth(false);
     }
 
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      if (currentUser) {
-        setUser(currentUser);
-      } else if (!savedGuest) {
-        setUser(null);
+    // Safety fallback: If Firebase Auth takes longer than 2.5s to respond (e.g. network hiccup or uninitialized local state), unblock and show Landing / Guest prompt
+    const timeoutId = setTimeout(() => {
+      if (isSubscribed) {
+        setLoadingAuth((current) => {
+          if (current) {
+            console.warn('[Mnemósyne Auth] Firebase auth resolution timed out, displaying landing / guest options.');
+            return false;
+          }
+          return false;
+        });
       }
-      setLoadingAuth(false);
-    });
+    }, 2500);
 
-    return () => unsubscribe();
+    let unsubscribe = () => {};
+    try {
+      unsubscribe = onAuthStateChanged(
+        auth,
+        (currentUser) => {
+          clearTimeout(timeoutId);
+          if (!isSubscribed) return;
+          if (currentUser) {
+            setUser(currentUser);
+          } else if (!savedGuest) {
+            setUser(null);
+          }
+          setLoadingAuth(false);
+        },
+        (error) => {
+          clearTimeout(timeoutId);
+          console.warn('[Mnemósyne Auth Error]:', error);
+          if (isSubscribed) {
+            setLoadingAuth(false);
+          }
+        }
+      );
+    } catch (err) {
+      clearTimeout(timeoutId);
+      console.warn('[Mnemósyne Auth Init Error]:', err);
+      setLoadingAuth(false);
+    }
+
+    return () => {
+      isSubscribed = false;
+      clearTimeout(timeoutId);
+      unsubscribe();
+    };
   }, []);
 
   const handleSignOut = async () => {
