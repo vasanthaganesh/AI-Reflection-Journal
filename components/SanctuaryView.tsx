@@ -101,123 +101,114 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
     }
   }, [messages, isHistoryDrawerOpen]);
 
-  const activeAudioRef = useRef<HTMLAudioElement | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const playbackAnalyserRef = useRef<AnalyserNode | null>(null);
+  const playbackRafIdRef = useRef<number | null>(null);
 
-  // Web Speech Synthesis (Text-to-Speech)
-  const speakText = useCallback((text: string, personaId: CompanionPersonaId) => {
-    if (isVoiceMuted || typeof window === 'undefined' || !('speechSynthesis' in window)) {
-      return;
-    }
-
+  const initOrResumeAudioContext = useCallback(() => {
+    if (typeof window === 'undefined') return null;
     try {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      const voices = window.speechSynthesis.getVoices();
-
-      // Tune voice characteristics per persona
-      switch (personaId) {
-        case 'samantha':
-          utterance.pitch = 1.15;
-          utterance.rate = 1.0;
-          // Prefer warm female voices
-          const femaleVoice = voices.find(v => /female|samantha|zira|victoria|karen|moira|google us english/i.test(v.name));
-          if (femaleVoice) utterance.voice = femaleVoice;
-          break;
-        case 'bestie':
-          utterance.pitch = 1.05;
-          utterance.rate = 1.1;
-          break;
-        case 'mentor':
-          utterance.pitch = 0.85;
-          utterance.rate = 0.92;
-          const deepVoice = voices.find(v => /david|george|daniel|guy|male/i.test(v.name));
-          if (deepVoice) utterance.voice = deepVoice;
-          break;
-        case 'parent':
-          utterance.pitch = 0.95;
-          utterance.rate = 0.94;
-          break;
-        case 'coach':
-          utterance.pitch = 1.0;
-          utterance.rate = 1.02;
-          break;
+      if (!audioCtxRef.current) {
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        audioCtxRef.current = new AudioCtx();
+        const analyser = audioCtxRef.current.createAnalyser();
+        analyser.fftSize = 256;
+        playbackAnalyserRef.current = analyser;
       }
-
-      utterance.onstart = () => {
-        setCompanionState('speaking');
-        setAudioLevel(0.45);
-      };
-
-      utterance.onend = () => {
-        setCompanionState('idle');
-        setAudioLevel(0.0);
-      };
-
-      utterance.onerror = () => {
-        setCompanionState('idle');
-        setAudioLevel(0.0);
-      };
-
-      window.speechSynthesis.speak(utterance);
+      if (audioCtxRef.current.state === 'suspended') {
+        audioCtxRef.current.resume().catch(() => {});
+      }
+      return audioCtxRef.current;
     } catch (e) {
-      console.warn('Speech synthesis error:', e);
-      setCompanionState('idle');
+      console.warn('AudioContext initialization error:', e);
+      return null;
     }
-  }, [isVoiceMuted]);
+  }, []);
 
-  const playGeminiAudio = useCallback((audioDataUrl: string, fallbackText: string) => {
-    if (isVoiceMuted) {
+  const stopActiveAudio = useCallback(() => {
+    if (playbackRafIdRef.current) {
+      cancelAnimationFrame(playbackRafIdRef.current);
+      playbackRafIdRef.current = null;
+    }
+    if (currentSourceRef.current) {
+      try {
+        currentSourceRef.current.onended = null;
+        currentSourceRef.current.stop();
+        currentSourceRef.current.disconnect();
+      } catch {}
+      currentSourceRef.current = null;
+    }
+    setCompanionState('idle');
+    setAudioLevel(0);
+  }, []);
+
+  // Web Audio API playback for natural Gemini voice (Aoede, Puck, Charon, Kore, Fenrir)
+  const playGeminiAudio = useCallback(async (audioDataUrl: string) => {
+    if (isVoiceMuted || typeof window === 'undefined') {
       setCompanionState('idle');
       return;
     }
 
     try {
-      if (activeAudioRef.current) {
-        activeAudioRef.current.pause();
-        activeAudioRef.current = null;
+      stopActiveAudio();
+      const ctx = initOrResumeAudioContext();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') {
+        await ctx.resume();
       }
 
-      const audio = new Audio(audioDataUrl);
-      activeAudioRef.current = audio;
+      // Extract raw base64 data whether payload is data:audio/wav;base64,... or plain base64
+      const base64Data = audioDataUrl.includes(',') ? audioDataUrl.split(',')[1] : audioDataUrl;
+      const binaryString = window.atob(base64Data);
+      const len = binaryString.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
 
-      let pulseInterval: any = null;
+      const audioBuffer = await ctx.decodeAudioData(bytes.buffer.slice(0));
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
 
-      audio.onplay = () => {
-        setCompanionState('speaking');
-        setAudioLevel(0.65);
-        pulseInterval = setInterval(() => {
-          setAudioLevel(0.4 + Math.random() * 0.45);
-        }, 120);
-      };
+      const analyser = playbackAnalyserRef.current;
+      if (analyser) {
+        source.connect(analyser);
+        analyser.connect(ctx.destination);
 
-      const cleanup = () => {
-        if (pulseInterval) {
-          clearInterval(pulseInterval);
-          pulseInterval = null;
+        // Real-time audio frequency visualizer that drives the specular marble pulsation
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        const updateAudioLevel = () => {
+          analyser.getByteFrequencyData(dataArray);
+          let sum = 0;
+          for (let i = 0; i < dataArray.length; i++) {
+            sum += dataArray[i];
+          }
+          const avg = sum / dataArray.length / 255.0;
+          setAudioLevel(Math.min(1.0, avg * 1.8));
+          playbackRafIdRef.current = requestAnimationFrame(updateAudioLevel);
+        };
+        playbackRafIdRef.current = requestAnimationFrame(updateAudioLevel);
+      } else {
+        source.connect(ctx.destination);
+      }
+
+      currentSourceRef.current = source;
+      setCompanionState('speaking');
+
+      source.onended = () => {
+        if (currentSourceRef.current === source) {
+          currentSourceRef.current = null;
         }
-        setCompanionState('idle');
-        setAudioLevel(0.0);
+        stopActiveAudio();
       };
 
-      audio.onended = cleanup;
-      audio.onpause = cleanup;
-
-      audio.onerror = (e) => {
-        cleanup();
-        console.warn('Gemini audio playback error event, using speech synthesis fallback:', e);
-        speakText(fallbackText, activePersonaId);
-      };
-
-      audio.play().catch((e) => {
-        cleanup();
-        console.warn('Gemini audio play failed, falling back to speech synthesis:', e);
-        speakText(fallbackText, activePersonaId);
-      });
+      source.start(0);
     } catch (err) {
-      console.warn('Gemini audio playback exception:', err);
-      speakText(fallbackText, activePersonaId);
+      console.warn('Gemini Web Audio playback error:', err);
+      stopActiveAudio();
     }
-  }, [isVoiceMuted, activePersonaId, speakText]);
+  }, [isVoiceMuted, initOrResumeAudioContext, stopActiveAudio]);
 
   // Handle persona change
   const handleSelectPersona = async (id: CompanionPersonaId) => {
@@ -244,7 +235,7 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${userToken}`,
+          Authorization: `Bearer ${userToken || 'guest-dev-token'}`,
         },
         body: JSON.stringify({
           prompt: newPersona.greeting,
@@ -255,14 +246,13 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
       if (res.ok) {
         const data = await res.json();
         if (data.audio) {
-          playGeminiAudio(data.audio, newPersona.greeting);
+          playGeminiAudio(data.audio);
           return;
         }
       }
     } catch (e) {
       console.warn('Failed to synthesize persona greeting voice:', e);
     }
-    speakText(newPersona.greeting, id);
   };
 
   // Send turn to backend
@@ -274,15 +264,7 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
     setErrorMessage(null);
 
     // Stop previous audio playback if user speaks again
-    if (activeAudioRef.current) {
-      activeAudioRef.current.pause();
-      activeAudioRef.current = null;
-    }
-
-    // Cancel ongoing speech if user interrupts
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-    }
+    stopActiveAudio();
 
     const userMsg: CompanionMessage = {
       id: 'usr-' + Date.now(),
@@ -306,7 +288,7 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${userToken}`,
+          Authorization: `Bearer ${userToken || 'guest-dev-token'}`,
         },
         body: JSON.stringify({
           prompt: textToSend,
@@ -339,9 +321,9 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
       setMessages((prev) => [...prev, assistantMsg]);
 
       if (data.audio && !isVoiceMuted) {
-        playGeminiAudio(data.audio, replyText);
+        playGeminiAudio(data.audio);
       } else {
-        speakText(replyText, activePersonaId);
+        setCompanionState('idle');
       }
     } catch (err: any) {
       console.error('Companion error:', err);
@@ -590,10 +572,10 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
           {/* Mute Voice Toggle */}
           <button
             onClick={() => {
-              setIsVoiceMuted((prev) => !prev);
-              if (!isVoiceMuted && typeof window !== 'undefined' && 'speechSynthesis' in window) {
-                window.speechSynthesis.cancel();
-              }
+              setIsVoiceMuted((prev) => {
+                if (!prev) stopActiveAudio();
+                return !prev;
+              });
             }}
             className={`p-2 rounded-full border transition-all cursor-pointer ${
               isVoiceMuted

@@ -39,12 +39,13 @@ import { useVoiceRecorder } from '@/hooks/useVoiceRecorder';
 import { GlowingMarble } from '@/components/GlowingMarble';
 import { ImageBall } from '@/components/ImageBall';
 import { AudioNotePlayer } from '@/components/AudioNotePlayer';
-import { CalendarView } from '@/components/CalendarView';
-import { MemoriesView } from '@/components/MemoriesView';
 import dynamic from 'next/dynamic';
-import { AnalyticsView } from '@/components/AnalyticsView';
 import { DashboardHome } from '@/components/DashboardHome';
-import { SanctuaryView } from '@/components/SanctuaryView';
+
+const CalendarView = dynamic(() => import('@/components/CalendarView').then((mod) => mod.CalendarView), { ssr: false });
+const MemoriesView = dynamic(() => import('@/components/MemoriesView').then((mod) => mod.MemoriesView), { ssr: false });
+const AnalyticsView = dynamic(() => import('@/components/AnalyticsView').then((mod) => mod.AnalyticsView), { ssr: false });
+const SanctuaryView = dynamic(() => import('@/components/SanctuaryView').then((mod) => mod.SanctuaryView), { ssr: false });
 
 const MapView = dynamic(() => import('@/components/MapView').then((mod) => mod.MapView), {
   ssr: false,
@@ -135,57 +136,37 @@ function compressImage(file: File, maxWidth = 800, quality = 0.72): Promise<stri
 }
 
 export default function App() {
-  const [user, setUser] = useState<AuthUser | null>(null);
-  const [loadingAuth, setLoadingAuth] = useState(true);
+  const [user, setUser] = useState<AuthUser | null>(() => {
+    if (typeof window !== 'undefined') {
+      return getSavedGuestUser();
+    }
+    return null;
+  });
 
   useEffect(() => {
     let isSubscribed = true;
-    const savedGuest = getSavedGuestUser();
-    if (savedGuest) {
-      setUser(savedGuest);
-      setLoadingAuth(false);
-      return;
-    }
 
-    // Safety fallback: Give Firebase Auth max 600ms to resolve token from indexedDB/cookie.
-    // If no active Firebase session exists, immediately show Landing Page / Guest Mode!
-    const timeoutId = setTimeout(() => {
-      if (isSubscribed) {
-        setLoadingAuth(false);
-      }
-    }, 600);
-
+    // Listen to Firebase Auth state for Google account sign-in
     let unsubscribe = () => {};
     try {
       unsubscribe = onAuthStateChanged(
         auth,
         (currentUser) => {
-          clearTimeout(timeoutId);
           if (!isSubscribed) return;
           if (currentUser) {
             setUser(currentUser);
-          } else {
-            setUser(null);
           }
-          setLoadingAuth(false);
         },
         (error) => {
-          clearTimeout(timeoutId);
           console.warn('[Mnemósyne Auth Error]:', error);
-          if (isSubscribed) {
-            setLoadingAuth(false);
-          }
         }
       );
     } catch (err) {
-      clearTimeout(timeoutId);
       console.warn('[Mnemósyne Auth Init Error]:', err);
-      setLoadingAuth(false);
     }
 
     return () => {
       isSubscribed = false;
-      clearTimeout(timeoutId);
       unsubscribe();
     };
   }, []);
@@ -194,24 +175,6 @@ export default function App() {
     await logOut();
     setUser(null);
   };
-
-  if (loadingAuth) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-[#F6F5FA]">
-        <div className="flex flex-col items-center gap-4 text-center px-4">
-          <div className="w-10 h-10 rounded-full border-2 border-[#212121] border-t-transparent animate-spin" />
-          <p className="text-xs font-medium tracking-wider text-[#212121]/60 uppercase">Loading Mnemósyne</p>
-          <button
-            type="button"
-            onClick={() => setLoadingAuth(false)}
-            className="mt-2 text-xs font-semibold px-4 py-1.5 rounded-full bg-white border border-[#212121]/15 text-[#212121] hover:bg-[#212121] hover:text-white transition-all cursor-pointer shadow-xs"
-          >
-            Skip to App &rarr;
-          </button>
-        </div>
-      </div>
-    );
-  }
 
   if (!user) {
     return <LandingPage onUserAuthenticated={setUser} />;
@@ -483,6 +446,17 @@ function MainDashboard({ user, onSignOut }: { user: AuthUser; onSignOut: () => v
       };
     }
 
+    // Safeguard: Fallback to local entries if cloud sync takes more than 1200ms
+    const cloudSyncFallbackTimeout = setTimeout(async () => {
+      if (!isCancelled) {
+        const locals = await loadLocalEntries();
+        if (!isCancelled && locals.length > 0) {
+          setEntries(locals);
+        }
+        setLoadingEntries(false);
+      }
+    }, 1200);
+
     let unsubscribeEntries = () => {};
     let unsubscribeReminders = () => {};
 
@@ -491,6 +465,7 @@ function MainDashboard({ user, onSignOut }: { user: AuthUser; onSignOut: () => v
       unsubscribeEntries = onSnapshot(
         entriesQuery,
         (snapshot) => {
+          clearTimeout(cloudSyncFallbackTimeout);
           const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as JournalEntry[];
           setEntries(list);
           setIsUsingLocalStorage(false);
@@ -503,6 +478,7 @@ function MainDashboard({ user, onSignOut }: { user: AuthUser; onSignOut: () => v
           }
         },
         async () => {
+          clearTimeout(cloudSyncFallbackTimeout);
           setIsUsingLocalStorage(true);
           const locals = await loadLocalEntries();
           if (isCancelled) return;
@@ -529,6 +505,7 @@ function MainDashboard({ user, onSignOut }: { user: AuthUser; onSignOut: () => v
         }
       );
     } catch {
+      clearTimeout(cloudSyncFallbackTimeout);
       setIsUsingLocalStorage(true);
       loadLocalEntries().then((locals) => {
         if (isCancelled) return;
@@ -540,6 +517,7 @@ function MainDashboard({ user, onSignOut }: { user: AuthUser; onSignOut: () => v
 
     return () => {
       isCancelled = true;
+      clearTimeout(cloudSyncFallbackTimeout);
       unsubscribeEntries();
       unsubscribeReminders();
     };
