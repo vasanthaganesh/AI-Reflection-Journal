@@ -182,6 +182,48 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
     }
   }, [isVoiceMuted]);
 
+  const activeAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  const playGeminiAudio = useCallback((audioDataUrl: string, fallbackText: string) => {
+    if (isVoiceMuted) {
+      setCompanionState('idle');
+      return;
+    }
+
+    try {
+      if (activeAudioRef.current) {
+        activeAudioRef.current.pause();
+        activeAudioRef.current = null;
+      }
+
+      const audio = new Audio(audioDataUrl);
+      activeAudioRef.current = audio;
+
+      audio.onplay = () => {
+        setCompanionState('speaking');
+        setAudioLevel(0.55);
+      };
+
+      audio.onended = () => {
+        setCompanionState('idle');
+        setAudioLevel(0.0);
+      };
+
+      audio.onerror = (e) => {
+        console.warn('Gemini audio playback error event, using speech synthesis fallback:', e);
+        speakText(fallbackText, activePersonaId);
+      };
+
+      audio.play().catch((e) => {
+        console.warn('Gemini audio play failed, falling back to speech synthesis:', e);
+        speakText(fallbackText, activePersonaId);
+      });
+    } catch (err) {
+      console.warn('Gemini audio playback exception:', err);
+      speakText(fallbackText, activePersonaId);
+    }
+  }, [isVoiceMuted, activePersonaId, speakText]);
+
   // Send turn to backend
   const handleSendMessage = async (rawInput?: string) => {
     const textToSend = (rawInput !== undefined ? rawInput : inputText).trim();
@@ -189,6 +231,12 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
 
     setInputText('');
     setErrorMessage(null);
+
+    // Stop previous audio playback if user speaks again
+    if (activeAudioRef.current) {
+      activeAudioRef.current.pause();
+      activeAudioRef.current = null;
+    }
 
     // Cancel ongoing speech if user interrupts
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
@@ -248,7 +296,12 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
       };
 
       setMessages((prev) => [...prev, assistantMsg]);
-      speakText(replyText, activePersonaId);
+
+      if (data.audio && !isVoiceMuted) {
+        playGeminiAudio(data.audio, replyText);
+      } else {
+        speakText(replyText, activePersonaId);
+      }
     } catch (err: any) {
       console.error('Companion error:', err);
       setErrorMessage(err.message || 'Companion connection interrupted.');

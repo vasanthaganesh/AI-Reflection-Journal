@@ -5,12 +5,37 @@ import { checkRateLimit, getClientIp } from '@/lib/rate-limit';
 import { getPersonaPrompt, COMPANION_PERSONAS } from '@/lib/personas';
 import { CompanionPersonaId } from '@/lib/types';
 
-const MODELS = [
+const AUDIO_MODELS = [
+  'gemini-2.5-flash-native-audio-preview-12-2025',
+  'gemini-2.5-flash',
+  'gemini-2.0-flash',
   'gemini-3.1-flash-lite',
   'gemini-3.6-flash',
-  'gemini-3.7-flash',
   'gemini-flash-latest',
 ];
+
+function pcmToWavDataUrl(pcmBase64: string, sampleRate = 24000): string {
+  const pcmBuffer = Buffer.from(pcmBase64, 'base64');
+  const dataLength = pcmBuffer.length;
+  const header = Buffer.alloc(44);
+
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + dataLength, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20); // PCM format
+  header.writeUInt16LE(1, 22); // mono
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28); // ByteRate
+  header.writeUInt16LE(2, 32);  // BlockAlign
+  header.writeUInt16LE(16, 34); // BitsPerSample
+  header.write('data', 36);
+  header.writeUInt32LE(dataLength, 40);
+
+  const wavBuffer = Buffer.concat([header, pcmBuffer]);
+  return `data:audio/wav;base64,${wavBuffer.toString('base64')}`;
+}
 
 function cleanSpeechText(text: string): string {
   // Strip stage directions like *giggles*, *sighs*, (pauses), etc.
@@ -34,24 +59,49 @@ function parseEmotion(text: string): { emotion: string; text: string } {
   };
 }
 
-async function generateContentWithFallback(ai: GoogleGenAI, contents: any, systemInstruction: string) {
+async function generateContentWithFallback(ai: GoogleGenAI, contents: any, systemInstruction: string, voiceName = 'Aoede') {
   let lastError: any;
-  for (const model of MODELS) {
+  
+  // First attempt: Request Audio + Text with prebuilt Gemini voice
+  for (const model of AUDIO_MODELS) {
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents,
+        config: {
+          systemInstruction,
+          responseModalities: ['AUDIO', 'TEXT'],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: {
+                voiceName,
+              },
+            },
+          },
+        },
+      });
+      return { response, hasAudio: true };
+    } catch (error: any) {
+      console.warn(`[Companion API] Audio model ${model} failed, trying fallback:`, error.message);
+      lastError = error;
+    }
+  }
+
+  // Fallback attempt: Request Text-only if Audio modality is unavailable
+  for (const model of AUDIO_MODELS) {
     try {
       const response = await ai.models.generateContent({
         model,
         contents,
         config: { systemInstruction },
       });
-      return response;
+      return { response, hasAudio: false };
     } catch (error: any) {
-      console.warn(`[Companion API] Model ${model} failed:`, error.message);
+      console.warn(`[Companion API] Fallback text model ${model} failed:`, error.message);
       lastError = error;
-      if (error.status && error.status >= 400 && error.status < 500 && error.status !== 429 && error.status !== 404) {
-        throw error;
-      }
     }
   }
+
   throw lastError;
 }
 
@@ -138,8 +188,28 @@ export async function POST(req: NextRequest) {
       ? [...history, { role: 'user', parts: [{ text: sandboxedUserPrompt }] }]
       : [{ role: 'user', parts: [{ text: sandboxedUserPrompt }] }];
 
-    const response = await generateContentWithFallback(ai, contents, systemInstruction);
-    const rawText = response.text || '';
+    const persona = COMPANION_PERSONAS[validPersonaId];
+    const voiceName = persona.voiceName || 'Aoede';
+
+    const { response, hasAudio } = await generateContentWithFallback(ai, contents, systemInstruction, voiceName);
+    
+    let rawText = response.text || '';
+    let audioDataUrl: string | null = null;
+
+    if (response.candidates?.[0]?.content?.parts) {
+      for (const part of response.candidates[0].content.parts) {
+        if (part.inlineData && part.inlineData.data) {
+          try {
+            audioDataUrl = pcmToWavDataUrl(part.inlineData.data, 24000);
+          } catch (e) {
+            console.warn('[Companion Audio Conversion Error]:', e);
+          }
+        }
+        if (part.text && !rawText) {
+          rawText = part.text;
+        }
+      }
+    }
 
     // Extract emotion bracket tag and clean speech text
     const { emotion, text: textAfterEmotion } = parseEmotion(rawText);
@@ -147,6 +217,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       text: spokenText,
+      audio: audioDataUrl,
       emotion: emotion,
       raw: rawText,
       personaId: validPersonaId,

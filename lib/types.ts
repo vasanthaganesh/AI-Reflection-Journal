@@ -146,6 +146,7 @@ export interface CompanionPersona {
   name: string;
   role: string;
   avatarEmoji: string;
+  voiceName?: string;
   auraColors: { 
     c1: [number, number, number]; 
     c2: [number, number, number]; 
