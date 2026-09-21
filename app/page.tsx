@@ -41,10 +41,22 @@ import { ImageBall } from '@/components/ImageBall';
 import { AudioNotePlayer } from '@/components/AudioNotePlayer';
 import { CalendarView } from '@/components/CalendarView';
 import { MemoriesView } from '@/components/MemoriesView';
-import { MapView } from '@/components/MapView';
+import dynamic from 'next/dynamic';
 import { AnalyticsView } from '@/components/AnalyticsView';
 import { DashboardHome } from '@/components/DashboardHome';
 import { SanctuaryView } from '@/components/SanctuaryView';
+
+const MapView = dynamic(() => import('@/components/MapView').then((mod) => mod.MapView), {
+  ssr: false,
+  loading: () => (
+    <div className="flex-1 flex items-center justify-center bg-[#F6F5FA]">
+      <div className="flex flex-col items-center gap-2">
+        <div className="w-8 h-8 rounded-full border-2 border-[#212121] border-t-transparent animate-spin" />
+        <span className="text-xs font-semibold text-[#212121]/60">Loading Interactive Map...</span>
+      </div>
+    </div>
+  ),
+});
 import { formatDateDDMMYYYY, formatDateTimeDDMMYYYY, parseToDate } from '@/lib/utils';
 import { encryptLocalData, decryptLocalData } from '@/lib/storage-crypto';
 
