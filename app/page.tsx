@@ -144,20 +144,16 @@ export default function App() {
     if (savedGuest) {
       setUser(savedGuest);
       setLoadingAuth(false);
+      return;
     }
 
-    // Safety fallback: If Firebase Auth takes longer than 2.5s to respond (e.g. network hiccup or uninitialized local state), unblock and show Landing / Guest prompt
+    // Safety fallback: Give Firebase Auth max 600ms to resolve token from indexedDB/cookie.
+    // If no active Firebase session exists, immediately show Landing Page / Guest Mode!
     const timeoutId = setTimeout(() => {
       if (isSubscribed) {
-        setLoadingAuth((current) => {
-          if (current) {
-            console.warn('[Mnemósyne Auth] Firebase auth resolution timed out, displaying landing / guest options.');
-            return false;
-          }
-          return false;
-        });
+        setLoadingAuth(false);
       }
-    }, 2500);
+    }, 600);
 
     let unsubscribe = () => {};
     try {
@@ -168,7 +164,7 @@ export default function App() {
           if (!isSubscribed) return;
           if (currentUser) {
             setUser(currentUser);
-          } else if (!savedGuest) {
+          } else {
             setUser(null);
           }
           setLoadingAuth(false);
@@ -202,9 +198,16 @@ export default function App() {
   if (loadingAuth) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#F6F5FA]">
-        <div className="flex flex-col items-center gap-3">
+        <div className="flex flex-col items-center gap-4 text-center px-4">
           <div className="w-10 h-10 rounded-full border-2 border-[#212121] border-t-transparent animate-spin" />
           <p className="text-xs font-medium tracking-wider text-[#212121]/60 uppercase">Loading Mnemósyne</p>
+          <button
+            type="button"
+            onClick={() => setLoadingAuth(false)}
+            className="mt-2 text-xs font-semibold px-4 py-1.5 rounded-full bg-white border border-[#212121]/15 text-[#212121] hover:bg-[#212121] hover:text-white transition-all cursor-pointer shadow-xs"
+          >
+            Skip to App &rarr;
+          </button>
         </div>
       </div>
     );
