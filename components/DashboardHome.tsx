@@ -16,7 +16,8 @@ import {
   Clock, 
   Flame, 
   Feather,
-  ChevronRight
+  ChevronRight,
+  Headphones
 } from 'lucide-react';
 import { motion } from 'motion/react';
 
@@ -24,7 +25,7 @@ interface DashboardHomeProps {
   userDisplayName?: string | null;
   entries: JournalEntry[];
   reminders: Reminder[];
-  onNavigate: (view: 'journal' | 'calendar' | 'memories' | 'map' | 'analytics') => void;
+  onNavigate: (view: 'journal' | 'calendar' | 'memories' | 'map' | 'analytics' | 'sanctuary') => void;
   onSelectEntry: (id: string) => void;
   onNewReflection: () => void;
 }
@@ -297,8 +298,38 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
             </motion.div>
           </div>
 
-          {/* Secondary 2 Cards: Interactive Map & Mindful Analytics */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
+          {/* Secondary 3 Cards: Companion Sanctuary, Interactive Map & Mindful Analytics */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-6">
+            {/* Sanctuary Companion Card */}
+            <motion.div
+              whileHover={{ y: -3 }}
+              onClick={() => onNavigate('sanctuary')}
+              className="p-6 rounded-3xl bg-white border border-[#212121]/8 shadow-xs hover:shadow-md transition-all cursor-pointer flex items-center justify-between gap-4 group relative overflow-hidden"
+            >
+              <div className="flex items-center gap-4 min-w-0">
+                <div className="w-12 h-12 rounded-2xl bg-[#212121] text-white flex items-center justify-center font-bold shrink-0 shadow-2xs group-hover:scale-105 transition-transform">
+                  <Headphones className="w-6 h-6 text-[#EFF0A3]" />
+                </div>
+                <div className="min-w-0">
+                  <h4 className="text-base font-bold text-[#212121] group-hover:text-black">
+                    AI Companion Sanctuary
+                  </h4>
+                  <p className="text-xs text-[#212121]/60 font-medium">
+                    Confide, decompress & reflect with Samantha, Marcus, or Alex
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2.5 shrink-0">
+                <span className="px-3 py-1 rounded-full bg-[#EFF0A3] text-xs font-bold text-[#212121] whitespace-nowrap shrink-0">
+                  Voice
+                </span>
+                <div className="w-8 h-8 rounded-full bg-[#F6F5FA] group-hover:bg-[#212121] group-hover:text-white flex items-center justify-center transition-colors shrink-0">
+                  <ArrowUpRight className="w-4 h-4" />
+                </div>
+              </div>
+            </motion.div>
+
             {/* Map Card */}
             <motion.div
               whileHover={{ y: -3 }}
@@ -311,10 +342,10 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
                 </div>
                 <div className="min-w-0">
                   <h4 className="text-base font-bold text-[#212121] group-hover:text-black">
-                    Interactive Map of Reflections
+                    Interactive Map
                   </h4>
                   <p className="text-xs text-[#212121]/60 font-medium">
-                    Explore geotagged journal reflections across the world
+                    Explore geotagged journal reflections worldwide
                   </p>
                 </div>
               </div>
@@ -341,10 +372,10 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
                 </div>
                 <div className="min-w-0">
                   <h4 className="text-base font-bold text-[#212121] group-hover:text-black">
-                    Mindful Analytics & Statistics
+                    Mindful Analytics
                   </h4>
                   <p className="text-xs text-[#212121]/60 font-medium">
-                    Mood curve trends, writing velocity, and recurring life themes
+                    Mood curve trends and recurring life themes
                   </p>
                 </div>
               </div>

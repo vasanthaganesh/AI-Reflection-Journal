@@ -31,7 +31,8 @@ import {
   ExtractedEvent, 
   VoiceNoteData, 
   LocationData,
-  Message
+  Message,
+  ViewMode
 } from '@/lib/types';
 import { useDebounce } from '@/hooks/useDebounce';
 import { useVoiceRecorder } from '@/hooks/useVoiceRecorder';
@@ -43,6 +44,7 @@ import { MemoriesView } from '@/components/MemoriesView';
 import { MapView } from '@/components/MapView';
 import { AnalyticsView } from '@/components/AnalyticsView';
 import { DashboardHome } from '@/components/DashboardHome';
+import { SanctuaryView } from '@/components/SanctuaryView';
 import { formatDateDDMMYYYY, formatDateTimeDDMMYYYY, parseToDate } from '@/lib/utils';
 import { encryptLocalData, decryptLocalData } from '@/lib/storage-crypto';
 
@@ -82,11 +84,11 @@ import {
   Home,
   TrendingUp,
   Globe,
-  Layers
+  Layers,
+  Headphones
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
-type ViewMode = 'dashboard' | 'journal' | 'calendar' | 'memories' | 'map' | 'analytics';
 type TimeFilter = 'all' | 'today' | 'week' | 'month';
 
 const LOCAL_SESSIONS_PREFIX = 'mnemosyne_sessions_';
@@ -347,6 +349,21 @@ function MainDashboard({ user, onSignOut }: { user: AuthUser; onSignOut: () => v
   const [isUsingLocalStorage, setIsUsingLocalStorage] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('all');
+  const [userToken, setUserToken] = useState<string>('guest-dev-token');
+
+  useEffect(() => {
+    let isCancelled = false;
+    user.getIdToken().then((t) => {
+      if (!isCancelled && t) {
+        setUserToken(t);
+      }
+    }).catch(() => {
+      setUserToken('guest-dev-token');
+    });
+    return () => {
+      isCancelled = true;
+    };
+  }, [user]);
 
   // Debounced cloud save queue
   const pendingUpdatesRef = useRef<{ id: string; updates: Partial<JournalEntry> } | null>(null);
@@ -558,6 +575,56 @@ function MainDashboard({ user, onSignOut }: { user: AuthUser; onSignOut: () => v
       setCurrentEntryId(newId);
       setViewMode('journal');
       return newId;
+    }
+  };
+
+  // Save crystallized sanctuary reflection as a full journal entry
+  const handleSaveSanctuaryReflection = async (reflection: {
+    title: string;
+    content: string;
+    mood: MoodType;
+    tags: string[];
+    aiReflection: string;
+  }) => {
+    await flushPendingSave();
+    const newDate = new Date().toISOString();
+    const newEntryData: Omit<JournalEntry, 'id'> = {
+      title: reflection.title || 'Sanctuary Reflection',
+      content: reflection.content,
+      sections: [],
+      createdAt: newDate,
+      updatedAt: newDate,
+      mood: reflection.mood || 'good',
+      messages: [],
+      tags: reflection.tags || ['Sanctuary'],
+      images: [],
+      aiReflection: reflection.aiReflection,
+    };
+
+    if (isUsingLocalStorage || (user as any).isGuest) {
+      const newId = 'local-' + Date.now().toString(36) + Math.random().toString(36).substring(2, 6);
+      const newEntry: JournalEntry = { id: newId, ...newEntryData };
+      const updated = [newEntry, ...entries];
+      setEntries(updated);
+      saveLocalEntries(updated);
+      setCurrentEntryId(newId);
+      return;
+    }
+
+    try {
+      const docRef = await addDoc(collection(db, 'users', user.uid, 'sessions'), {
+        ...newEntryData,
+        updatedAt: serverTimestamp(),
+      });
+      setCurrentEntryId(docRef.id);
+    } catch {
+      setIsUsingLocalStorage(true);
+      const newId = 'local-' + Date.now().toString(36) + Math.random().toString(36).substring(2, 6);
+      const newEntry: JournalEntry = { id: newId, ...newEntryData };
+      const updated = [newEntry, ...entries];
+      setEntries(updated);
+      saveLocalEntries(updated);
+      setCurrentEntryId(newId);
     }
   };
 
@@ -1015,6 +1082,7 @@ function MainDashboard({ user, onSignOut }: { user: AuthUser; onSignOut: () => v
               {[
                 { id: 'dashboard' as ViewMode, label: 'Dashboard', icon: Home },
                 { id: 'journal' as ViewMode, label: 'Journal', icon: BookOpen },
+                { id: 'sanctuary' as ViewMode, label: 'Sanctuary', icon: Headphones },
                 {
                   id: 'calendar' as ViewMode,
                   label: 'Calendar',
@@ -1162,6 +1230,18 @@ function MainDashboard({ user, onSignOut }: { user: AuthUser; onSignOut: () => v
                   Begin Reflection
                 </button>
               </div>
+            )}
+
+            {viewMode === 'sanctuary' && (
+              <SanctuaryView
+                entries={entries}
+                userToken={userToken}
+                onSaveAsEntry={handleSaveSanctuaryReflection}
+                onNavigateToJournal={() => {
+                  setOpenedFromView(null);
+                  setViewMode('journal');
+                }}
+              />
             )}
 
             {viewMode === 'calendar' && (

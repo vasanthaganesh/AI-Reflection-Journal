@@ -137,3 +137,37 @@ export interface Reminder {
   createdAt: string;
 }
 
+export type ViewMode = 'dashboard' | 'journal' | 'calendar' | 'memories' | 'map' | 'analytics' | 'sanctuary';
+
+export type CompanionPersonaId = 'samantha' | 'bestie' | 'mentor' | 'parent' | 'coach';
+
+export interface CompanionPersona {
+  id: CompanionPersonaId;
+  name: string;
+  role: string;
+  avatarEmoji: string;
+  auraColors: { 
+    c1: [number, number, number]; 
+    c2: [number, number, number]; 
+    c3: [number, number, number] 
+  };
+  greeting: string;
+  description: string;
+}
+
+export interface CompanionMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  emotion?: string;
+  timestamp: string;
+}
+
+export interface CrystallizeResult {
+  title: string;
+  content: string;
+  mood: MoodType;
+  tags: string[];
+  aiReflection: string;
+}
+
