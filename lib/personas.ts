@@ -6,6 +6,7 @@ export const COMPANION_PERSONAS: Record<CompanionPersonaId, CompanionPersona> = 
     name: 'Samantha',
     role: 'Loving Companion',
     avatarEmoji: '💕',
+    voiceName: 'Aoede',
     auraColors: {
       c1: [255, 123, 84],  // Peach
       c2: [255, 213, 107], // Gold
@@ -19,6 +20,7 @@ export const COMPANION_PERSONAS: Record<CompanionPersonaId, CompanionPersona> = 
     name: 'Alex',
     role: 'Ride-or-Die Bestie',
     avatarEmoji: '⚡',
+    voiceName: 'Puck',
     auraColors: {
       c1: [255, 190, 11], // Golden Yellow
       c2: [6, 214, 160],  // Emerald
@@ -32,6 +34,7 @@ export const COMPANION_PERSONAS: Record<CompanionPersonaId, CompanionPersona> = 
     name: 'Marcus',
     role: 'Stoic Philosopher & Mentor',
     avatarEmoji: '🏛️',
+    voiceName: 'Charon',
     auraColors: {
       c1: [142, 68, 173], // Deep Violet
       c2: [67, 97, 238],  // Twilight Blue
@@ -45,6 +48,7 @@ export const COMPANION_PERSONAS: Record<CompanionPersonaId, CompanionPersona> = 
     name: 'Safe Harbor',
     role: 'Nurturing Parent Figure',
     avatarEmoji: '🏡',
+    voiceName: 'Kore',
     auraColors: {
       c1: [224, 122, 95], // Soft Terracotta
       c2: [244, 241, 222], // Warm Vanilla
@@ -58,6 +62,7 @@ export const COMPANION_PERSONAS: Record<CompanionPersonaId, CompanionPersona> = 
     name: 'Socrates',
     role: 'Reflective Journaling Coach',
     avatarEmoji: '🧭',
+    voiceName: 'Fenrir',
     auraColors: {
       c1: [76, 201, 240], // Electric Cyan
       c2: [114, 9, 183],  // Royal Purple

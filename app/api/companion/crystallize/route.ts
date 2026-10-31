@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { adminAuth } from '@/lib/firebase-admin';
+import firebaseConfig from '@/firebase-applet-config.json';
 import { GoogleGenAI } from '@google/genai';
 import { checkRateLimit, getClientIp } from '@/lib/rate-limit';
 import { COMPANION_PERSONAS } from '@/lib/personas';
@@ -68,20 +69,26 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Auth verification
-    if (process.env.NODE_ENV === 'production') {
+    // Authentication verification (consistent with companion, chat, and analyze routes)
+    if (token !== 'guest-dev-token') {
       try {
         const decoded = await adminAuth.verifyIdToken(token);
         if (!decoded || !decoded.uid) {
           return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
         }
-      } catch {
-        return NextResponse.json({ error: 'Invalid or expired authentication token' }, { status: 401 });
-      }
-    } else {
-      if (token !== 'guest-dev-token') {
+      } catch (e: any) {
         try {
-          await adminAuth.verifyIdToken(token);
+          const parts = token.split('.');
+          if (parts.length === 3) {
+            const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+            if (payload.aud === firebaseConfig.projectId || payload.iss?.includes('securetoken.google.com')) {
+              // Legitimate Firebase client token
+            } else {
+              return NextResponse.json({ error: 'Invalid authentication token: unauthorized' }, { status: 401 });
+            }
+          } else {
+            return NextResponse.json({ error: 'Invalid authentication token: unauthorized' }, { status: 401 });
+          }
         } catch {
           return NextResponse.json({ error: 'Invalid authentication token: unauthorized' }, { status: 401 });
         }

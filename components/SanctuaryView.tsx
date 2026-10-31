@@ -101,8 +101,203 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
     }
   }, [messages, isHistoryDrawerOpen]);
 
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const playbackAnalyserRef = useRef<AnalyserNode | null>(null);
+  const playbackRafIdRef = useRef<number | null>(null);
+
+  const initOrResumeAudioContext = useCallback(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      if (!audioCtxRef.current) {
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        audioCtxRef.current = new AudioCtx();
+        const analyser = audioCtxRef.current.createAnalyser();
+        analyser.fftSize = 256;
+        playbackAnalyserRef.current = analyser;
+      }
+      if (audioCtxRef.current.state === 'suspended') {
+        audioCtxRef.current.resume().catch(() => {});
+      }
+      return audioCtxRef.current;
+    } catch (e) {
+      console.warn('AudioContext initialization error:', e);
+      return null;
+    }
+  }, []);
+
+  const stopActiveAudio = useCallback(() => {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try { window.speechSynthesis.cancel(); } catch {}
+    }
+    if (playbackRafIdRef.current) {
+      cancelAnimationFrame(playbackRafIdRef.current);
+      playbackRafIdRef.current = null;
+    }
+    if (currentSourceRef.current) {
+      try {
+        currentSourceRef.current.onended = null;
+        currentSourceRef.current.stop();
+        currentSourceRef.current.disconnect();
+      } catch {}
+      currentSourceRef.current = null;
+    }
+    setCompanionState('idle');
+    setAudioLevel(0);
+  }, []);
+
+  // Web Speech API client-side fallback with strict female voice filtering
+  const speakBrowserFallback = useCallback((text: string, targetPersonaId: CompanionPersonaId = activePersonaId) => {
+    if (isVoiceMuted || typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      setCompanionState('idle');
+      return;
+    }
+
+    try {
+      window.speechSynthesis.cancel();
+      const cleanText = text.replace(/\*.*?\*/g, '').replace(/\([a-zA-Z\s]+\)/g, '').replace(/\[.*?\]/g, '').trim();
+      if (!cleanText) {
+        setCompanionState('idle');
+        return;
+      }
+
+      const utterance = new SpeechSynthesisUtterance(cleanText);
+
+      // Pitch & Rate tuning for natural female warmth
+      if (targetPersonaId === 'samantha') {
+        utterance.pitch = 1.15; // Soft, warm female pitch
+        utterance.rate = 0.94;  // Soothing conversational pace
+      } else if (targetPersonaId === 'parent') {
+        utterance.pitch = 1.08;
+        utterance.rate = 0.90;
+      } else if (targetPersonaId === 'bestie') {
+        utterance.pitch = 1.12;
+        utterance.rate = 1.0;
+      } else {
+        utterance.pitch = 1.10;
+        utterance.rate = 0.95;
+      }
+
+      const voices = window.speechSynthesis.getVoices();
+      
+      const MALE_KEYWORDS = [
+        'male', 'david', 'mark', 'george', 'daniel', 'guy', 'stefan', 
+        'james', 'richard', 'christopher', 'sean', 'adam', 'paul', 'brian'
+      ];
+      const isMale = (v: SpeechSynthesisVoice) => MALE_KEYWORDS.some((kw) => v.name.toLowerCase().includes(kw));
+
+      const PREFERRED_FEMALE_VOICES = [
+        'jenny', 'aria', 'zira', 'samantha', 'victoria', 'karen', 'fiona',
+        'moira', 'veena', 'google us english', 'google uk english female',
+        'female', 'natural', 'siri', 'eva', 'hazel', 'catherine'
+      ];
+
+      // 1. Match preferred female voice
+      let selectedVoice = voices.find((v) => {
+        if (isMale(v)) return false;
+        const nameLower = v.name.toLowerCase();
+        return v.lang.startsWith('en') && PREFERRED_FEMALE_VOICES.some((kw) => nameLower.includes(kw));
+      });
+
+      // 2. Fallback: Any English voice that is NOT male
+      if (!selectedVoice) {
+        selectedVoice = voices.find((v) => v.lang.startsWith('en') && !isMale(v));
+      }
+
+      // 3. Fallback: Any voice that is NOT male
+      if (!selectedVoice) {
+        selectedVoice = voices.find((v) => !isMale(v));
+      }
+
+      if (selectedVoice) {
+        utterance.voice = selectedVoice;
+      }
+
+      utterance.onstart = () => setCompanionState('speaking');
+      utterance.onend = () => setCompanionState('idle');
+      utterance.onerror = () => setCompanionState('idle');
+
+      window.speechSynthesis.speak(utterance);
+    } catch {
+      setCompanionState('idle');
+    }
+  }, [isVoiceMuted, activePersonaId]);
+
+  // Web Audio API playback for natural Gemini voice (Aoede, Puck, Charon, Kore, Fenrir)
+  const playGeminiAudio = useCallback(async (audioDataUrl: string, fallbackText?: string) => {
+    if (isVoiceMuted || typeof window === 'undefined') {
+      setCompanionState('idle');
+      return;
+    }
+
+    try {
+      stopActiveAudio();
+      const ctx = initOrResumeAudioContext();
+      if (!ctx) {
+        if (fallbackText) speakBrowserFallback(fallbackText);
+        return;
+      }
+      if (ctx.state === 'suspended') {
+        await ctx.resume();
+      }
+
+      // Extract raw base64 data whether payload is data:audio/wav;base64,... or plain base64
+      const base64Data = audioDataUrl.includes(',') ? audioDataUrl.split(',')[1] : audioDataUrl;
+      const binaryString = window.atob(base64Data);
+      const len = binaryString.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+
+      const audioBuffer = await ctx.decodeAudioData(bytes.buffer.slice(0));
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+
+      const analyser = playbackAnalyserRef.current;
+      if (analyser) {
+        source.connect(analyser);
+        analyser.connect(ctx.destination);
+
+        // Real-time audio frequency visualizer that drives the specular marble pulsation
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        const updateAudioLevel = () => {
+          analyser.getByteFrequencyData(dataArray);
+          let sum = 0;
+          for (let i = 0; i < dataArray.length; i++) {
+            sum += dataArray[i];
+          }
+          const avg = sum / dataArray.length / 255.0;
+          setAudioLevel(Math.min(1.0, avg * 1.8));
+          playbackRafIdRef.current = requestAnimationFrame(updateAudioLevel);
+        };
+        playbackRafIdRef.current = requestAnimationFrame(updateAudioLevel);
+      } else {
+        source.connect(ctx.destination);
+      }
+
+      currentSourceRef.current = source;
+      setCompanionState('speaking');
+
+      source.onended = () => {
+        if (currentSourceRef.current === source) {
+          currentSourceRef.current = null;
+        }
+        stopActiveAudio();
+      };
+
+      source.start(0);
+    } catch (err) {
+      console.warn('Gemini Web Audio playback error, switching to browser speech synthesis:', err);
+      stopActiveAudio();
+      if (fallbackText && !isVoiceMuted) {
+        speakBrowserFallback(fallbackText);
+      }
+    }
+  }, [isVoiceMuted, initOrResumeAudioContext, stopActiveAudio, speakBrowserFallback]);
+
   // Handle persona change
-  const handleSelectPersona = (id: CompanionPersonaId) => {
+  const handleSelectPersona = async (id: CompanionPersonaId) => {
     setActivePersonaId(id);
     const newPersona = COMPANION_PERSONAS[id];
     setCurrentSubtitle(newPersona.greeting);
@@ -117,70 +312,38 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       },
     ]);
-    speakText(newPersona.greeting, id);
-  };
 
-  // Web Speech Synthesis (Text-to-Speech)
-  const speakText = useCallback((text: string, personaId: CompanionPersonaId) => {
-    if (isVoiceMuted || typeof window === 'undefined' || !('speechSynthesis' in window)) {
-      return;
-    }
+    if (isVoiceMuted) return;
 
+    // Synthesize greeting with natural Gemini Voice
     try {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      const voices = window.speechSynthesis.getVoices();
-
-      // Tune voice characteristics per persona
-      switch (personaId) {
-        case 'samantha':
-          utterance.pitch = 1.15;
-          utterance.rate = 1.0;
-          // Prefer warm female voices
-          const femaleVoice = voices.find(v => /female|samantha|zira|victoria|karen|moira|google us english/i.test(v.name));
-          if (femaleVoice) utterance.voice = femaleVoice;
-          break;
-        case 'bestie':
-          utterance.pitch = 1.05;
-          utterance.rate = 1.1;
-          break;
-        case 'mentor':
-          utterance.pitch = 0.85;
-          utterance.rate = 0.92;
-          const deepVoice = voices.find(v => /david|george|daniel|guy|male/i.test(v.name));
-          if (deepVoice) utterance.voice = deepVoice;
-          break;
-        case 'parent':
-          utterance.pitch = 0.95;
-          utterance.rate = 0.94;
-          break;
-        case 'coach':
-          utterance.pitch = 1.0;
-          utterance.rate = 1.02;
-          break;
+      const res = await fetch('/api/companion', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${userToken || 'guest-dev-token'}`,
+        },
+        body: JSON.stringify({
+          prompt: newPersona.greeting,
+          personaId: id,
+          ttsOnly: true,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.audio) {
+          playGeminiAudio(data.audio, newPersona.greeting);
+          return;
+        }
       }
-
-      utterance.onstart = () => {
-        setCompanionState('speaking');
-        setAudioLevel(0.45);
-      };
-
-      utterance.onend = () => {
-        setCompanionState('idle');
-        setAudioLevel(0.0);
-      };
-
-      utterance.onerror = () => {
-        setCompanionState('idle');
-        setAudioLevel(0.0);
-      };
-
-      window.speechSynthesis.speak(utterance);
     } catch (e) {
-      console.warn('Speech synthesis error:', e);
-      setCompanionState('idle');
+      console.warn('Failed to synthesize persona greeting voice:', e);
     }
-  }, [isVoiceMuted]);
+
+    if (!isVoiceMuted) {
+      speakBrowserFallback(newPersona.greeting);
+    }
+  };
 
   // Send turn to backend
   const handleSendMessage = async (rawInput?: string) => {
@@ -190,10 +353,8 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
     setInputText('');
     setErrorMessage(null);
 
-    // Cancel ongoing speech if user interrupts
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-    }
+    // Stop previous audio playback if user speaks again
+    stopActiveAudio();
 
     const userMsg: CompanionMessage = {
       id: 'usr-' + Date.now(),
@@ -217,7 +378,7 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${userToken}`,
+          Authorization: `Bearer ${userToken || 'guest-dev-token'}`,
         },
         body: JSON.stringify({
           prompt: textToSend,
@@ -248,7 +409,14 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
       };
 
       setMessages((prev) => [...prev, assistantMsg]);
-      speakText(replyText, activePersonaId);
+
+      if (data.audio && !isVoiceMuted) {
+        playGeminiAudio(data.audio, replyText);
+      } else if (!isVoiceMuted) {
+        speakBrowserFallback(replyText);
+      } else {
+        setCompanionState('idle');
+      }
     } catch (err: any) {
       console.error('Companion error:', err);
       setErrorMessage(err.message || 'Companion connection interrupted.');
@@ -421,7 +589,7 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${userToken}`,
+          Authorization: `Bearer ${userToken || 'guest-dev-token'}`,
         },
         body: JSON.stringify({
           messages: dialogueMessages.map((m) => ({ role: m.role, content: m.content })),
@@ -496,10 +664,10 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
           {/* Mute Voice Toggle */}
           <button
             onClick={() => {
-              setIsVoiceMuted((prev) => !prev);
-              if (!isVoiceMuted && typeof window !== 'undefined' && 'speechSynthesis' in window) {
-                window.speechSynthesis.cancel();
-              }
+              setIsVoiceMuted((prev) => {
+                if (!prev) stopActiveAudio();
+                return !prev;
+              });
             }}
             className={`p-2 rounded-full border transition-all cursor-pointer ${
               isVoiceMuted

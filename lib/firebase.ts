@@ -50,24 +50,18 @@ export const signInWithGoogle = async () => {
 };
 
 export const signInAsGuest = async (guestName: string = "Guest Philosopher"): Promise<AuthUser> => {
-  try {
-    // Try Firebase Anonymous Auth first
-    const res = await signInAnonymously(auth);
-    localStorage.removeItem(LOCAL_GUEST_KEY);
-    return res.user;
-  } catch (err) {
-    // If anonymous auth is disabled or restricted in Firebase Console, use Local Guest Mode
-    const guestUser: CustomUser = {
-      uid: "guest-" + Math.random().toString(36).substring(2, 9),
-      displayName: guestName,
-      email: "guest@local.dev",
-      isAnonymous: true,
-      isGuest: true,
-      getIdToken: async () => "guest-dev-token"
-    };
+  const guestUser: CustomUser = {
+    uid: "guest-" + Math.random().toString(36).substring(2, 9),
+    displayName: guestName,
+    email: "guest@local.dev",
+    isAnonymous: true,
+    isGuest: true,
+    getIdToken: async () => "guest-dev-token"
+  };
+  if (typeof window !== "undefined") {
     localStorage.setItem(LOCAL_GUEST_KEY, JSON.stringify(guestUser));
-    return guestUser;
   }
+  return guestUser;
 };
 
 export const getSavedGuestUser = (): CustomUser | null => {

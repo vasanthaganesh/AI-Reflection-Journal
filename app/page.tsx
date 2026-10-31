@@ -39,12 +39,13 @@ import { useVoiceRecorder } from '@/hooks/useVoiceRecorder';
 import { GlowingMarble } from '@/components/GlowingMarble';
 import { ImageBall } from '@/components/ImageBall';
 import { AudioNotePlayer } from '@/components/AudioNotePlayer';
-import { CalendarView } from '@/components/CalendarView';
-import { MemoriesView } from '@/components/MemoriesView';
 import dynamic from 'next/dynamic';
-import { AnalyticsView } from '@/components/AnalyticsView';
 import { DashboardHome } from '@/components/DashboardHome';
-import { SanctuaryView } from '@/components/SanctuaryView';
+
+const CalendarView = dynamic(() => import('@/components/CalendarView').then((mod) => mod.CalendarView), { ssr: false });
+const MemoriesView = dynamic(() => import('@/components/MemoriesView').then((mod) => mod.MemoriesView), { ssr: false });
+const AnalyticsView = dynamic(() => import('@/components/AnalyticsView').then((mod) => mod.AnalyticsView), { ssr: false });
+const SanctuaryView = dynamic(() => import('@/components/SanctuaryView').then((mod) => mod.SanctuaryView), { ssr: false });
 
 const MapView = dynamic(() => import('@/components/MapView').then((mod) => mod.MapView), {
   ssr: false,
@@ -135,26 +136,41 @@ function compressImage(file: File, maxWidth = 800, quality = 0.72): Promise<stri
 }
 
 export default function App() {
+  const [mounted, setMounted] = useState(false);
   const [user, setUser] = useState<AuthUser | null>(null);
-  const [loadingAuth, setLoadingAuth] = useState(true);
 
   useEffect(() => {
-    const savedGuest = getSavedGuestUser();
-    if (savedGuest) {
-      setUser(savedGuest);
-      setLoadingAuth(false);
+    setMounted(true);
+    const guest = getSavedGuestUser();
+    if (guest) {
+      setUser(guest);
     }
 
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      if (currentUser) {
-        setUser(currentUser);
-      } else if (!savedGuest) {
-        setUser(null);
-      }
-      setLoadingAuth(false);
-    });
+    let isSubscribed = true;
 
-    return () => unsubscribe();
+    // Listen to Firebase Auth state for Google account sign-in
+    let unsubscribe = () => {};
+    try {
+      unsubscribe = onAuthStateChanged(
+        auth,
+        (currentUser) => {
+          if (!isSubscribed) return;
+          if (currentUser) {
+            setUser(currentUser);
+          }
+        },
+        (error) => {
+          console.warn('[Mnemósyne Auth Error]:', error);
+        }
+      );
+    } catch (err) {
+      console.warn('[Mnemósyne Auth Init Error]:', err);
+    }
+
+    return () => {
+      isSubscribed = false;
+      unsubscribe();
+    };
   }, []);
 
   const handleSignOut = async () => {
@@ -162,12 +178,12 @@ export default function App() {
     setUser(null);
   };
 
-  if (loadingAuth) {
+  if (!mounted) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#F6F5FA]">
-        <div className="flex flex-col items-center gap-3">
-          <div className="w-10 h-10 rounded-full border-2 border-[#212121] border-t-transparent animate-spin" />
-          <p className="text-xs font-medium tracking-wider text-[#212121]/60 uppercase">Loading Mnemósyne</p>
+        <div className="flex flex-col items-center gap-2">
+          <div className="w-8 h-8 rounded-full border-2 border-[#212121] border-t-transparent animate-spin" />
+          <span className="text-xs font-semibold text-[#212121]/60">Loading Mnemósyne...</span>
         </div>
       </div>
     );
@@ -319,13 +335,21 @@ function LandingPage({ onUserAuthenticated }: { onUserAuthenticated: (user: Auth
 // ─────────────────────────────────────────────────────────────
 function MainDashboard({ user, onSignOut }: { user: AuthUser; onSignOut: () => void }) {
   // Restore view mode and active entry from storage if available, defaulting to dashboard
-  const [viewMode, setViewModeState] = useState<ViewMode>(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('mnemosyne_active_view_' + user.uid) as ViewMode | null;
-      if (saved) return saved;
-    }
-    return 'dashboard';
-  });
+  const [viewMode, setViewModeState] = useState<ViewMode>('dashboard');
+  const [currentEntryId, setCurrentEntryIdState] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      const savedView = localStorage.getItem('mnemosyne_active_view_' + user.uid) as ViewMode | null;
+      if (savedView) {
+        setViewModeState(savedView);
+      }
+      const savedEntry = localStorage.getItem('mnemosyne_active_entry_' + user.uid);
+      if (savedEntry) {
+        setCurrentEntryIdState(savedEntry);
+      }
+    } catch {}
+  }, [user.uid]);
 
   const setViewMode = useCallback((mode: ViewMode) => {
     setViewModeState(mode);
@@ -337,13 +361,6 @@ function MainDashboard({ user, onSignOut }: { user: AuthUser; onSignOut: () => v
   const [openedFromView, setOpenedFromView] = useState<ViewMode | null>(null);
   const [entries, setEntries] = useState<JournalEntry[]>([]);
   const [reminders, setReminders] = useState<Reminder[]>([]);
-
-  const [currentEntryId, setCurrentEntryIdState] = useState<string | null>(() => {
-    if (typeof window !== 'undefined') {
-      return localStorage.getItem('mnemosyne_active_entry_' + user.uid);
-    }
-    return null;
-  });
 
   const setCurrentEntryId = useCallback((id: string | null) => {
     setCurrentEntryIdState(id);
@@ -443,6 +460,17 @@ function MainDashboard({ user, onSignOut }: { user: AuthUser; onSignOut: () => v
       };
     }
 
+    // Safeguard: Fallback to local entries if cloud sync takes more than 1200ms
+    const cloudSyncFallbackTimeout = setTimeout(async () => {
+      if (!isCancelled) {
+        const locals = await loadLocalEntries();
+        if (!isCancelled && locals.length > 0) {
+          setEntries(locals);
+        }
+        setLoadingEntries(false);
+      }
+    }, 1200);
+
     let unsubscribeEntries = () => {};
     let unsubscribeReminders = () => {};
 
@@ -451,6 +479,7 @@ function MainDashboard({ user, onSignOut }: { user: AuthUser; onSignOut: () => v
       unsubscribeEntries = onSnapshot(
         entriesQuery,
         (snapshot) => {
+          clearTimeout(cloudSyncFallbackTimeout);
           const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as JournalEntry[];
           setEntries(list);
           setIsUsingLocalStorage(false);
@@ -463,6 +492,7 @@ function MainDashboard({ user, onSignOut }: { user: AuthUser; onSignOut: () => v
           }
         },
         async () => {
+          clearTimeout(cloudSyncFallbackTimeout);
           setIsUsingLocalStorage(true);
           const locals = await loadLocalEntries();
           if (isCancelled) return;
@@ -489,6 +519,7 @@ function MainDashboard({ user, onSignOut }: { user: AuthUser; onSignOut: () => v
         }
       );
     } catch {
+      clearTimeout(cloudSyncFallbackTimeout);
       setIsUsingLocalStorage(true);
       loadLocalEntries().then((locals) => {
         if (isCancelled) return;
@@ -500,6 +531,7 @@ function MainDashboard({ user, onSignOut }: { user: AuthUser; onSignOut: () => v
 
     return () => {
       isCancelled = true;
+      clearTimeout(cloudSyncFallbackTimeout);
       unsubscribeEntries();
       unsubscribeReminders();
     };
@@ -1927,11 +1959,12 @@ function JournalEditorView({
               value={title}
               onChange={(e) => handleTitleChange(e.target.value)}
               placeholder="Title of this reflection..."
-              className={`w-full font-bold tracking-tight bg-transparent border-none outline-none mb-4 transition-all ${
+              className={`w-full font-bold bg-transparent border-none outline-none mb-4 transition-all ${
                 isPaperMode
-                  ? 'font-handwriting text-3xl sm:text-5xl text-[#1a4eb8] blue-ink-text blue-ink-placeholder font-bold tracking-wide'
-                  : 'text-2xl sm:text-4xl text-[#212121] placeholder-[#212121]/65'
+                  ? 'font-handwriting text-3xl sm:text-5xl text-[#1a4eb8] blue-ink-text blue-ink-placeholder font-bold tracking-normal'
+                  : 'text-2xl sm:text-4xl text-[#212121] placeholder-[#212121]/65 tracking-tight'
               }`}
+              style={isPaperMode ? { fontFamily: 'var(--font-handwriting), Caveat, "Ink Free", "Segoe Print", cursive' } : undefined}
             />
 
             {/* Photo Gallery row if photos attached (up to 10 photos - clean layout, no polaroid frames) */}
@@ -1985,9 +2018,10 @@ function JournalEditorView({
               placeholder="Pour your thoughts freely onto the page... Gemini reflects quietly alongside you."
               className={`w-full min-h-[380px] sm:min-h-[500px] bg-transparent border-none outline-none resize-none mb-6 transition-all ${
                 isPaperMode
-                  ? 'font-handwriting text-2xl sm:text-3xl lg:text-[28px] leading-[2.1] text-[#1a4eb8] blue-ink-text blue-ink-placeholder font-medium'
+                  ? 'font-handwriting text-2xl sm:text-3xl lg:text-[28px] leading-[2.1] text-[#1a4eb8] blue-ink-text blue-ink-placeholder font-medium tracking-normal'
                   : 'text-base sm:text-lg leading-relaxed text-[#212121] placeholder-[#212121]/65 font-medium'
               }`}
+              style={isPaperMode ? { fontFamily: 'var(--font-handwriting), Caveat, "Ink Free", "Segoe Print", cursive' } : undefined}
             />
 
             {/* ─────────────────────────────────────────────────────────────
@@ -2067,11 +2101,12 @@ function JournalEditorView({
                           value={section.title}
                           onChange={(e) => handleUpdateSection(section.id, { title: e.target.value })}
                           placeholder="New Reflection..."
-                          className={`font-bold tracking-tight bg-transparent border-none outline-none flex-1 transition-all ${
+                          className={`font-bold bg-transparent border-none outline-none flex-1 transition-all ${
                             isPaperMode
-                              ? 'font-handwriting text-2xl sm:text-3xl text-[#1a4eb8] blue-ink-text blue-ink-placeholder font-bold'
-                              : 'text-base font-bold text-[#212121] placeholder-[#212121]/65'
+                              ? 'font-handwriting text-2xl sm:text-3xl text-[#1a4eb8] blue-ink-text blue-ink-placeholder font-bold tracking-normal'
+                              : 'text-base font-bold text-[#212121] placeholder-[#212121]/65 tracking-tight'
                           }`}
+                          style={isPaperMode ? { fontFamily: 'var(--font-handwriting), Caveat, "Ink Free", "Segoe Print", cursive' } : undefined}
                         />
                       </div>
 
@@ -2093,9 +2128,10 @@ function JournalEditorView({
                       placeholder="Write details for this moment of your day..."
                       className={`w-full min-h-[130px] sm:min-h-[170px] bg-transparent border-none outline-none resize-none font-medium transition-all ${
                         isPaperMode
-                          ? 'font-handwriting text-xl sm:text-2xl leading-[1.9] text-[#1a4eb8] blue-ink-text blue-ink-placeholder'
+                          ? 'font-handwriting text-xl sm:text-2xl leading-[1.9] text-[#1a4eb8] blue-ink-text blue-ink-placeholder tracking-normal'
                           : 'text-sm leading-relaxed text-[#212121] placeholder-[#212121]/65'
                       }`}
+                      style={isPaperMode ? { fontFamily: 'var(--font-handwriting), Caveat, "Ink Free", "Segoe Print", cursive' } : undefined}
                     />
                   </div>
                 ))}
