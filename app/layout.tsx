@@ -7,6 +7,7 @@ const urbanist = Urbanist({
   weight: ['400', '500', '600', '700', '800'],
   variable: '--font-urbanist',
   display: 'swap',
+  adjustFontFallback: false,
 });
 
 const caveat = Caveat({
@@ -14,6 +15,7 @@ const caveat = Caveat({
   weight: ['400', '500', '600', '700'],
   variable: '--font-caveat',
   display: 'swap',
+  adjustFontFallback: false,
 });
 
 export const metadata: Metadata = {
@@ -34,7 +36,7 @@ export const metadata: Metadata = {
 export default function RootLayout({children}: {children: React.ReactNode}) {
   return (
     <html lang="en" className={`${urbanist.variable} ${caveat.variable}`}>
-      <body className={`${urbanist.className} font-sans bg-[#F6F5FA] text-[#212121] antialiased`} suppressHydrationWarning>
+      <body className={`${urbanist.className} ${caveat.className} font-sans bg-[#F6F5FA] text-[#212121] antialiased`} suppressHydrationWarning>
         {children}
       </body>
     </html>

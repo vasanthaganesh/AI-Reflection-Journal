@@ -136,14 +136,16 @@ function compressImage(file: File, maxWidth = 800, quality = 0.72): Promise<stri
 }
 
 export default function App() {
-  const [user, setUser] = useState<AuthUser | null>(() => {
-    if (typeof window !== 'undefined') {
-      return getSavedGuestUser();
-    }
-    return null;
-  });
+  const [mounted, setMounted] = useState(false);
+  const [user, setUser] = useState<AuthUser | null>(null);
 
   useEffect(() => {
+    setMounted(true);
+    const guest = getSavedGuestUser();
+    if (guest) {
+      setUser(guest);
+    }
+
     let isSubscribed = true;
 
     // Listen to Firebase Auth state for Google account sign-in
@@ -175,6 +177,17 @@ export default function App() {
     await logOut();
     setUser(null);
   };
+
+  if (!mounted) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#F6F5FA]">
+        <div className="flex flex-col items-center gap-2">
+          <div className="w-8 h-8 rounded-full border-2 border-[#212121] border-t-transparent animate-spin" />
+          <span className="text-xs font-semibold text-[#212121]/60">Loading Mnemósyne...</span>
+        </div>
+      </div>
+    );
+  }
 
   if (!user) {
     return <LandingPage onUserAuthenticated={setUser} />;
@@ -322,13 +335,21 @@ function LandingPage({ onUserAuthenticated }: { onUserAuthenticated: (user: Auth
 // ─────────────────────────────────────────────────────────────
 function MainDashboard({ user, onSignOut }: { user: AuthUser; onSignOut: () => void }) {
   // Restore view mode and active entry from storage if available, defaulting to dashboard
-  const [viewMode, setViewModeState] = useState<ViewMode>(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('mnemosyne_active_view_' + user.uid) as ViewMode | null;
-      if (saved) return saved;
-    }
-    return 'dashboard';
-  });
+  const [viewMode, setViewModeState] = useState<ViewMode>('dashboard');
+  const [currentEntryId, setCurrentEntryIdState] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      const savedView = localStorage.getItem('mnemosyne_active_view_' + user.uid) as ViewMode | null;
+      if (savedView) {
+        setViewModeState(savedView);
+      }
+      const savedEntry = localStorage.getItem('mnemosyne_active_entry_' + user.uid);
+      if (savedEntry) {
+        setCurrentEntryIdState(savedEntry);
+      }
+    } catch {}
+  }, [user.uid]);
 
   const setViewMode = useCallback((mode: ViewMode) => {
     setViewModeState(mode);
@@ -340,13 +361,6 @@ function MainDashboard({ user, onSignOut }: { user: AuthUser; onSignOut: () => v
   const [openedFromView, setOpenedFromView] = useState<ViewMode | null>(null);
   const [entries, setEntries] = useState<JournalEntry[]>([]);
   const [reminders, setReminders] = useState<Reminder[]>([]);
-
-  const [currentEntryId, setCurrentEntryIdState] = useState<string | null>(() => {
-    if (typeof window !== 'undefined') {
-      return localStorage.getItem('mnemosyne_active_entry_' + user.uid);
-    }
-    return null;
-  });
 
   const setCurrentEntryId = useCallback((id: string | null) => {
     setCurrentEntryIdState(id);
@@ -1945,11 +1959,12 @@ function JournalEditorView({
               value={title}
               onChange={(e) => handleTitleChange(e.target.value)}
               placeholder="Title of this reflection..."
-              className={`w-full font-bold tracking-tight bg-transparent border-none outline-none mb-4 transition-all ${
+              className={`w-full font-bold bg-transparent border-none outline-none mb-4 transition-all ${
                 isPaperMode
-                  ? 'font-handwriting text-3xl sm:text-5xl text-[#1a4eb8] blue-ink-text blue-ink-placeholder font-bold tracking-wide'
-                  : 'text-2xl sm:text-4xl text-[#212121] placeholder-[#212121]/65'
+                  ? 'font-handwriting text-3xl sm:text-5xl text-[#1a4eb8] blue-ink-text blue-ink-placeholder font-bold tracking-normal'
+                  : 'text-2xl sm:text-4xl text-[#212121] placeholder-[#212121]/65 tracking-tight'
               }`}
+              style={isPaperMode ? { fontFamily: 'var(--font-handwriting), Caveat, "Ink Free", "Segoe Print", cursive' } : undefined}
             />
 
             {/* Photo Gallery row if photos attached (up to 10 photos - clean layout, no polaroid frames) */}
@@ -2003,9 +2018,10 @@ function JournalEditorView({
               placeholder="Pour your thoughts freely onto the page... Gemini reflects quietly alongside you."
               className={`w-full min-h-[380px] sm:min-h-[500px] bg-transparent border-none outline-none resize-none mb-6 transition-all ${
                 isPaperMode
-                  ? 'font-handwriting text-2xl sm:text-3xl lg:text-[28px] leading-[2.1] text-[#1a4eb8] blue-ink-text blue-ink-placeholder font-medium'
+                  ? 'font-handwriting text-2xl sm:text-3xl lg:text-[28px] leading-[2.1] text-[#1a4eb8] blue-ink-text blue-ink-placeholder font-medium tracking-normal'
                   : 'text-base sm:text-lg leading-relaxed text-[#212121] placeholder-[#212121]/65 font-medium'
               }`}
+              style={isPaperMode ? { fontFamily: 'var(--font-handwriting), Caveat, "Ink Free", "Segoe Print", cursive' } : undefined}
             />
 
             {/* ─────────────────────────────────────────────────────────────
@@ -2085,11 +2101,12 @@ function JournalEditorView({
                           value={section.title}
                           onChange={(e) => handleUpdateSection(section.id, { title: e.target.value })}
                           placeholder="New Reflection..."
-                          className={`font-bold tracking-tight bg-transparent border-none outline-none flex-1 transition-all ${
+                          className={`font-bold bg-transparent border-none outline-none flex-1 transition-all ${
                             isPaperMode
-                              ? 'font-handwriting text-2xl sm:text-3xl text-[#1a4eb8] blue-ink-text blue-ink-placeholder font-bold'
-                              : 'text-base font-bold text-[#212121] placeholder-[#212121]/65'
+                              ? 'font-handwriting text-2xl sm:text-3xl text-[#1a4eb8] blue-ink-text blue-ink-placeholder font-bold tracking-normal'
+                              : 'text-base font-bold text-[#212121] placeholder-[#212121]/65 tracking-tight'
                           }`}
+                          style={isPaperMode ? { fontFamily: 'var(--font-handwriting), Caveat, "Ink Free", "Segoe Print", cursive' } : undefined}
                         />
                       </div>
 
@@ -2111,9 +2128,10 @@ function JournalEditorView({
                       placeholder="Write details for this moment of your day..."
                       className={`w-full min-h-[130px] sm:min-h-[170px] bg-transparent border-none outline-none resize-none font-medium transition-all ${
                         isPaperMode
-                          ? 'font-handwriting text-xl sm:text-2xl leading-[1.9] text-[#1a4eb8] blue-ink-text blue-ink-placeholder'
+                          ? 'font-handwriting text-xl sm:text-2xl leading-[1.9] text-[#1a4eb8] blue-ink-text blue-ink-placeholder tracking-normal'
                           : 'text-sm leading-relaxed text-[#212121] placeholder-[#212121]/65'
                       }`}
+                      style={isPaperMode ? { fontFamily: 'var(--font-handwriting), Caveat, "Ink Free", "Segoe Print", cursive' } : undefined}
                     />
                   </div>
                 ))}
