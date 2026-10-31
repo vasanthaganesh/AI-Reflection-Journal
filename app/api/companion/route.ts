@@ -13,8 +13,14 @@ const DIALOGUE_MODELS = [
   'gemini-flash-latest',
 ];
 
-// High-fidelity speech synthesis model for natural Gemini voice output
-const TTS_MODEL = 'gemini-3.1-flash-tts-preview';
+// High-fidelity speech synthesis models for natural Gemini voice output
+const TTS_MODELS = [
+  'gemini-2.5-flash-preview-tts',
+  'gemini-3.1-flash-tts-preview',
+];
+
+// In-memory cache for synthesized voice clips (greetings, repeated phrases)
+const ttsAudioCache = new Map<string, string>();
 
 function pcmToWavDataUrl(pcmBase64: string, sampleRate = 24000): string {
   const pcmBuffer = Buffer.from(pcmBase64, 'base64');
@@ -82,31 +88,43 @@ async function generateDialogueWithFallback(ai: GoogleGenAI, contents: any, syst
 }
 
 async function synthesizeGeminiVoice(ai: GoogleGenAI, text: string, voiceName: string): Promise<string | null> {
-  try {
-    const ttsResponse = await ai.models.generateContent({
-      model: TTS_MODEL,
-      contents: text,
-      config: {
-        responseModalities: ['AUDIO'],
-        speechConfig: {
-          voiceConfig: {
-            prebuiltVoiceConfig: {
-              voiceName: voiceName || 'Aoede',
+  const cleanedText = cleanSpeechText(text);
+  if (!cleanedText) return null;
+
+  const cacheKey = `${voiceName || 'Aoede'}:${cleanedText.toLowerCase()}`;
+  if (ttsAudioCache.has(cacheKey)) {
+    return ttsAudioCache.get(cacheKey)!;
+  }
+
+  for (const model of TTS_MODELS) {
+    try {
+      const ttsResponse = await ai.models.generateContent({
+        model,
+        contents: cleanedText,
+        config: {
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: {
+                voiceName: voiceName || 'Aoede',
+              },
             },
           },
         },
-      },
-    });
+      });
 
-    if (ttsResponse.candidates?.[0]?.content?.parts) {
-      for (const part of ttsResponse.candidates[0].content.parts) {
-        if (part.inlineData && part.inlineData.data) {
-          return pcmToWavDataUrl(part.inlineData.data, 24000);
+      if (ttsResponse.candidates?.[0]?.content?.parts) {
+        for (const part of ttsResponse.candidates[0].content.parts) {
+          if (part.inlineData && part.inlineData.data) {
+            const wavUrl = pcmToWavDataUrl(part.inlineData.data, 24000);
+            ttsAudioCache.set(cacheKey, wavUrl);
+            return wavUrl;
+          }
         }
       }
+    } catch (err: any) {
+      console.warn(`[Companion TTS] Model ${model} (${voiceName}) failed:`, err.message || err);
     }
-  } catch (err: any) {
-    console.warn(`[Companion TTS] Synthesis with ${TTS_MODEL} (${voiceName}) failed:`, err.message);
   }
   return null;
 }

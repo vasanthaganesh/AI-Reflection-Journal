@@ -127,6 +127,9 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
   }, []);
 
   const stopActiveAudio = useCallback(() => {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try { window.speechSynthesis.cancel(); } catch {}
+    }
     if (playbackRafIdRef.current) {
       cancelAnimationFrame(playbackRafIdRef.current);
       playbackRafIdRef.current = null;
@@ -143,8 +146,85 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
     setAudioLevel(0);
   }, []);
 
+  // Web Speech API client-side fallback with strict female voice filtering
+  const speakBrowserFallback = useCallback((text: string, targetPersonaId: CompanionPersonaId = activePersonaId) => {
+    if (isVoiceMuted || typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      setCompanionState('idle');
+      return;
+    }
+
+    try {
+      window.speechSynthesis.cancel();
+      const cleanText = text.replace(/\*.*?\*/g, '').replace(/\([a-zA-Z\s]+\)/g, '').replace(/\[.*?\]/g, '').trim();
+      if (!cleanText) {
+        setCompanionState('idle');
+        return;
+      }
+
+      const utterance = new SpeechSynthesisUtterance(cleanText);
+
+      // Pitch & Rate tuning for natural female warmth
+      if (targetPersonaId === 'samantha') {
+        utterance.pitch = 1.15; // Soft, warm female pitch
+        utterance.rate = 0.94;  // Soothing conversational pace
+      } else if (targetPersonaId === 'parent') {
+        utterance.pitch = 1.08;
+        utterance.rate = 0.90;
+      } else if (targetPersonaId === 'bestie') {
+        utterance.pitch = 1.12;
+        utterance.rate = 1.0;
+      } else {
+        utterance.pitch = 1.10;
+        utterance.rate = 0.95;
+      }
+
+      const voices = window.speechSynthesis.getVoices();
+      
+      const MALE_KEYWORDS = [
+        'male', 'david', 'mark', 'george', 'daniel', 'guy', 'stefan', 
+        'james', 'richard', 'christopher', 'sean', 'adam', 'paul', 'brian'
+      ];
+      const isMale = (v: SpeechSynthesisVoice) => MALE_KEYWORDS.some((kw) => v.name.toLowerCase().includes(kw));
+
+      const PREFERRED_FEMALE_VOICES = [
+        'jenny', 'aria', 'zira', 'samantha', 'victoria', 'karen', 'fiona',
+        'moira', 'veena', 'google us english', 'google uk english female',
+        'female', 'natural', 'siri', 'eva', 'hazel', 'catherine'
+      ];
+
+      // 1. Match preferred female voice
+      let selectedVoice = voices.find((v) => {
+        if (isMale(v)) return false;
+        const nameLower = v.name.toLowerCase();
+        return v.lang.startsWith('en') && PREFERRED_FEMALE_VOICES.some((kw) => nameLower.includes(kw));
+      });
+
+      // 2. Fallback: Any English voice that is NOT male
+      if (!selectedVoice) {
+        selectedVoice = voices.find((v) => v.lang.startsWith('en') && !isMale(v));
+      }
+
+      // 3. Fallback: Any voice that is NOT male
+      if (!selectedVoice) {
+        selectedVoice = voices.find((v) => !isMale(v));
+      }
+
+      if (selectedVoice) {
+        utterance.voice = selectedVoice;
+      }
+
+      utterance.onstart = () => setCompanionState('speaking');
+      utterance.onend = () => setCompanionState('idle');
+      utterance.onerror = () => setCompanionState('idle');
+
+      window.speechSynthesis.speak(utterance);
+    } catch {
+      setCompanionState('idle');
+    }
+  }, [isVoiceMuted, activePersonaId]);
+
   // Web Audio API playback for natural Gemini voice (Aoede, Puck, Charon, Kore, Fenrir)
-  const playGeminiAudio = useCallback(async (audioDataUrl: string) => {
+  const playGeminiAudio = useCallback(async (audioDataUrl: string, fallbackText?: string) => {
     if (isVoiceMuted || typeof window === 'undefined') {
       setCompanionState('idle');
       return;
@@ -153,7 +233,10 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
     try {
       stopActiveAudio();
       const ctx = initOrResumeAudioContext();
-      if (!ctx) return;
+      if (!ctx) {
+        if (fallbackText) speakBrowserFallback(fallbackText);
+        return;
+      }
       if (ctx.state === 'suspended') {
         await ctx.resume();
       }
@@ -205,10 +288,13 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
 
       source.start(0);
     } catch (err) {
-      console.warn('Gemini Web Audio playback error:', err);
+      console.warn('Gemini Web Audio playback error, switching to browser speech synthesis:', err);
       stopActiveAudio();
+      if (fallbackText && !isVoiceMuted) {
+        speakBrowserFallback(fallbackText);
+      }
     }
-  }, [isVoiceMuted, initOrResumeAudioContext, stopActiveAudio]);
+  }, [isVoiceMuted, initOrResumeAudioContext, stopActiveAudio, speakBrowserFallback]);
 
   // Handle persona change
   const handleSelectPersona = async (id: CompanionPersonaId) => {
@@ -246,12 +332,16 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
       if (res.ok) {
         const data = await res.json();
         if (data.audio) {
-          playGeminiAudio(data.audio);
+          playGeminiAudio(data.audio, newPersona.greeting);
           return;
         }
       }
     } catch (e) {
       console.warn('Failed to synthesize persona greeting voice:', e);
+    }
+
+    if (!isVoiceMuted) {
+      speakBrowserFallback(newPersona.greeting);
     }
   };
 
@@ -321,7 +411,9 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
       setMessages((prev) => [...prev, assistantMsg]);
 
       if (data.audio && !isVoiceMuted) {
-        playGeminiAudio(data.audio);
+        playGeminiAudio(data.audio, replyText);
+      } else if (!isVoiceMuted) {
+        speakBrowserFallback(replyText);
       } else {
         setCompanionState('idle');
       }
@@ -497,7 +589,7 @@ export const SanctuaryView: React.FC<SanctuaryViewProps> = ({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${userToken}`,
+          Authorization: `Bearer ${userToken || 'guest-dev-token'}`,
         },
         body: JSON.stringify({
           messages: dialogueMessages.map((m) => ({ role: m.role, content: m.content })),
